@@ -1,6 +1,6 @@
 # CCTV Monitor
 
-![CI](https://github.com/ВАШ_ЛОГИН/ИМЯ_РЕПО/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/mikhail3391/cctv-monitor/actions/workflows/ci.yml/badge.svg)
 
 Небольшой сервис на FastAPI для администратора видеонаблюдения. Ведёт реестр камер,
 следит за их статусом (online/offline), записывает события (движение, вмешательство) и
@@ -34,8 +34,8 @@
 Нужен Python 3.12 или новее.
 
 ```bash
-git clone https://github.com/ВАШ_ЛОГИН/ИМЯ_РЕПО.git
-cd ИМЯ_РЕПО
+git clone https://github.com/mikhail3391/cctv-monitor.git
+cd cctv-monitor
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
