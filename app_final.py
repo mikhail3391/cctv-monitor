@@ -402,7 +402,7 @@ def estimate_storage(
     result = calculate_storage(cameras * bitrate_mbps, days, reserve_percent)
     result["cameras"] = cameras
     logger.info(
-        "Расчёт хранилища: %d камер по %.1f Мбит/с, %d дн. -> %.2f ТБ",
+        "Расчёт хранилища: камер=%d, битрейт=%.1f Мбит/с, дней=%d -> %.2f ТБ",
         cameras,
         bitrate_mbps,
         days,
@@ -421,6 +421,9 @@ def required_storage(
     result = calculate_storage(total_mbps, days, reserve_percent)
     result["cameras"] = len(CAMERAS)
     logger.info(
-        "Нужно места под %d камер на %d дн.: %.2f ТБ", len(CAMERAS), days, result["total_tb"]
+        "Нужно места для зарегистрированных камер: камер=%d, дней=%d -> %.2f ТБ",
+        len(CAMERAS),
+        days,
+        result["total_tb"],
     )
     return result
