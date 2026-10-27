@@ -36,4 +36,5 @@ jobs:
             requirements.txt
             README.md
             .env.example
+          include-hidden-files: true  # иначе .env.example (имя с точкой) не попадёт в artifact
           if-no-files-found: error
