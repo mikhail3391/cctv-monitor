@@ -3,6 +3,7 @@
 Основа: учебный app_final.py (занятие 04 «FastAPI: реализуем приложение вместе»).
 """
 
+import datetime
 import itertools
 import logging
 import os
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 APP_VERSION = "1.0.0"
@@ -140,16 +141,46 @@ class StatusIn(BaseModel):
     status: CameraStatus
 
 
+# Типы событий. motion и tamper присылает пользователь (или система детекции),
+# offline и online сервис записывает сам, когда меняется статус камеры.
+EventType = Literal["motion", "tamper", "offline", "online"]
+ManualEventType = Literal["motion", "tamper"]
+
+
+class EventIn(BaseModel):
+    """Событие, которое присылает пользователь."""
+
+    type: ManualEventType
+    note: Optional[str] = Field(default=None, max_length=200, examples=["Движение у двери"])
+    occurred_at: Optional[datetime.datetime] = Field(
+        default=None, description="Время события. Если не указано — сейчас (UTC)."
+    )
+
+
+class Event(BaseModel):
+    """Записанное событие камеры."""
+
+    id: int
+    camera_id: int
+    type: EventType
+    note: Optional[str] = None
+    occurred_at: datetime.datetime
+
+
 # Хранилище в памяти: для учебного проекта база данных не нужна.
 CAMERAS: dict[int, Camera] = {}
+EVENTS: list[Event] = []
 _camera_ids = itertools.count(1)
+_event_ids = itertools.count(1)
 
 
 def reset_storage() -> None:
     """Очищает все данные и сбрасывает нумерацию (нужно тестам)."""
-    global _camera_ids
+    global _camera_ids, _event_ids
     CAMERAS.clear()
+    EVENTS.clear()
     _camera_ids = itertools.count(1)
+    _event_ids = itertools.count(1)
 
 
 def find_camera(camera_id: int) -> Camera:
@@ -159,6 +190,35 @@ def find_camera(camera_id: int) -> Camera:
         logger.warning("Камера id=%s не найдена", camera_id)
         raise HTTPException(status_code=404, detail=f"Камера id={camera_id} не найдена")
     return camera
+
+
+def record_event(
+    camera: Camera,
+    event_type: EventType,
+    note: Optional[str] = None,
+    occurred_at: Optional[datetime.datetime] = None,
+) -> Event:
+    """Сохраняет событие камеры и пишет его в лог."""
+    if occurred_at is not None and occurred_at.tzinfo is None:
+        # Время без часового пояса считаем UTC, чтобы события можно было сравнивать.
+        occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
+    event = Event(
+        id=next(_event_ids),
+        camera_id=camera.id,
+        type=event_type,
+        note=note,
+        occurred_at=occurred_at or datetime.datetime.now(datetime.timezone.utc),
+    )
+    EVENTS.append(event)
+    if event_type == "tamper":
+        logger.warning(
+            "Возможное вмешательство: камера id=%s %r (%s)",
+            camera.id,
+            camera.name,
+            camera.location,
+        )
+    logger.info("Событие id=%s: камера id=%s, тип=%s", event.id, camera.id, event.type)
+    return event
 
 
 @app.post("/cameras", response_model=Camera, status_code=201)
@@ -212,4 +272,50 @@ def set_camera_status(camera_id: int, data: StatusIn):
         )
     else:
         logger.info("Камера id=%s %r снова online", camera.id, camera.name)
+    record_event(camera, camera.status)
     return camera
+
+
+# ---------------------------------------------------------------------------
+# События и сводка
+# ---------------------------------------------------------------------------
+
+
+@app.post("/cameras/{camera_id}/events", response_model=Event, status_code=201)
+def create_event(camera_id: int, data: EventIn):
+    """Записывает событие камеры: движение (motion) или вмешательство (tamper)."""
+    camera = find_camera(camera_id)
+    return record_event(camera, data.type, data.note, data.occurred_at)
+
+
+@app.get("/events", response_model=list[Event])
+def list_events(
+    camera_id: Optional[int] = None,
+    event_type: Optional[EventType] = Query(default=None, alias="type"),
+    limit: int = Query(50, ge=1, le=500, description="Сколько последних событий вернуть"),
+):
+    """События от новых к старым. Можно отфильтровать по камере и по типу."""
+    items = EVENTS
+    if camera_id is not None:
+        items = [e for e in items if e.camera_id == camera_id]
+    if event_type:
+        items = [e for e in items if e.type == event_type]
+    return sorted(items, key=lambda e: (e.occurred_at, e.id), reverse=True)[:limit]
+
+
+@app.get("/summary")
+def summary():
+    """Общая картина: сколько камер работает и какие события были."""
+    cameras = list(CAMERAS.values())
+    offline = [c.name for c in cameras if c.status == "offline"]
+    by_type: dict[str, int] = {}
+    for event in EVENTS:
+        by_type[event.type] = by_type.get(event.type, 0) + 1
+    return {
+        "cameras_total": len(cameras),
+        "cameras_online": len(cameras) - len(offline),
+        "cameras_offline": len(offline),
+        "offline_names": offline,
+        "events_total": len(EVENTS),
+        "events_by_type": by_type,
+    }
