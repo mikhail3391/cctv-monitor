@@ -46,6 +46,39 @@ class Settings:
 
     app_name: str
     author: str
+    retention_days: int
+
+
+DEFAULT_RETENTION_DAYS = 14
+MAX_RETENTION_DAYS = 3650
+
+
+def parse_retention(raw: str) -> Optional[int]:
+    """Превращает строку в число дней хранения. Если значение неверное — None."""
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 1 <= value <= MAX_RETENTION_DAYS else None
+
+
+def read_retention() -> int:
+    """Читает RETENTION_DAYS. Если не задан или неверный — берёт значение по умолчанию."""
+    raw = os.getenv("RETENTION_DAYS")
+    parsed = parse_retention(raw) if raw is not None else None
+    return parsed if parsed is not None else DEFAULT_RETENTION_DAYS
+
+
+def check_settings() -> None:
+    """При запуске предупреждает в логе о неверных значениях настроек."""
+    raw = os.getenv("RETENTION_DAYS")
+    if raw is not None and parse_retention(raw) is None:
+        logger.warning(
+            "Неверный RETENTION_DAYS=%r (нужно целое число от 1 до %d), использую %d",
+            raw,
+            MAX_RETENTION_DAYS,
+            DEFAULT_RETENTION_DAYS,
+        )
 
 
 def get_settings() -> Settings:
@@ -53,13 +86,20 @@ def get_settings() -> Settings:
     return Settings(
         app_name=os.getenv("APP_NAME", "CCTV Monitor"),
         author=os.getenv("APP_AUTHOR", "Не указан"),
+        retention_days=read_retention(),
     )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    check_settings()
     settings = get_settings()
-    logger.info("Сервис запущен: app=%r version=%s", settings.app_name, APP_VERSION)
+    logger.info(
+        "Сервис запущен: app=%r version=%s retention_days=%d",
+        settings.app_name,
+        APP_VERSION,
+        settings.retention_days,
+    )
     yield
     logger.info("Сервис остановлен")
 
@@ -319,3 +359,68 @@ def summary():
         "events_total": len(EVENTS),
         "events_by_type": by_type,
     }
+
+
+# ---------------------------------------------------------------------------
+# Место под архив записей
+# ---------------------------------------------------------------------------
+
+# 1 Мбит/с за сутки = 86400 Мбит = 10 800 МБ = 10,8 ГБ (считаем в десятичных ГБ и ТБ).
+GB_PER_DAY_PER_MBPS = 86_400 / 8 / 1000
+
+
+def calculate_storage(total_mbps: float, days: int, reserve_percent: float) -> dict:
+    """Сколько места нужно, чтобы хранить записи указанное число дней."""
+    gb_per_day = total_mbps * GB_PER_DAY_PER_MBPS
+    raw_gb = gb_per_day * days
+    total_gb = raw_gb * (1 + reserve_percent / 100)
+    return {
+        "total_bitrate_mbps": round(total_mbps, 2),
+        "days": days,
+        "reserve_percent": reserve_percent,
+        "gb_per_day": round(gb_per_day, 2),
+        "raw_gb": round(raw_gb, 1),
+        "total_gb": round(total_gb, 1),
+        "total_tb": round(total_gb / 1000, 2),
+    }
+
+
+@app.get("/storage/estimate")
+def estimate_storage(
+    cameras: int = Query(ge=1, le=10_000, description="Количество камер"),
+    bitrate_mbps: float = Query(gt=0, le=100, description="Битрейт одной камеры, Мбит/с"),
+    days: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=MAX_RETENTION_DAYS,
+        description="Сколько дней хранить записи. По умолчанию — RETENTION_DAYS.",
+    ),
+    reserve_percent: float = Query(20, ge=0, le=100, description="Запас места, %"),
+):
+    """Калькулятор: сколько места нужно под архив для заданных камер."""
+    days = days or get_settings().retention_days
+    result = calculate_storage(cameras * bitrate_mbps, days, reserve_percent)
+    result["cameras"] = cameras
+    logger.info(
+        "Расчёт хранилища: %d камер по %.1f Мбит/с, %d дн. -> %.2f ТБ",
+        cameras,
+        bitrate_mbps,
+        days,
+        result["total_tb"],
+    )
+    return result
+
+
+@app.get("/storage/required")
+def required_storage(
+    reserve_percent: float = Query(20, ge=0, le=100, description="Запас места, %"),
+):
+    """Сколько места нужно под архив для всех зарегистрированных камер."""
+    days = get_settings().retention_days
+    total_mbps = sum((c.bitrate_mbps for c in CAMERAS.values()), 0.0)
+    result = calculate_storage(total_mbps, days, reserve_percent)
+    result["cameras"] = len(CAMERAS)
+    logger.info(
+        "Нужно места под %d камер на %d дн.: %.2f ТБ", len(CAMERAS), days, result["total_tb"]
+    )
+    return result
