@@ -4,34 +4,51 @@
 """
 
 import os
+import time
+from dataclasses import dataclass
 
 from fastapi import FastAPI
 
+APP_VERSION = "1.0.0"
+STARTED_AT = time.time()
 
-app = FastAPI(title="CCTV Monitor")
+
+@dataclass(frozen=True)
+class Settings:
+    """Настройки сервиса. Берутся из переменных окружения."""
+
+    app_name: str
+    author: str
+
+
+def get_settings() -> Settings:
+    """Читает переменные окружения при каждом вызове (удобно для тестов)."""
+    return Settings(
+        app_name=os.getenv("APP_NAME", "CCTV Monitor"),
+        author=os.getenv("APP_AUTHOR", "Не указан"),
+    )
+
+
+app = FastAPI(title="CCTV Monitor", version=APP_VERSION)
 
 
 @app.get("/")
 def root():
-    return {"message": "Сервис работает"}
+    settings = get_settings()
+    return {"message": f"{settings.app_name}: сервис работает", "docs": "/docs"}
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Проверка работоспособности: если вернулся ok — сервис жив."""
+    return {"status": "ok", "uptime_seconds": round(time.time() - STARTED_AT)}
 
 
-@app.get("/hello")
-def hello(name: str = "студент"):
-    return {"message": f"Привет, {name}!"}
-
-
-@app.get("/info")
-def info():
-    app_name = os.getenv("APP_NAME", "Учебный сервис")
-    app_author = os.getenv("APP_AUTHOR", "Не указан")
-
+@app.get("/version")
+def version():
+    settings = get_settings()
     return {
-        "app_name": app_name,
-        "author": app_author,
+        "app": settings.app_name,
+        "version": APP_VERSION,
+        "author": settings.author,
     }
