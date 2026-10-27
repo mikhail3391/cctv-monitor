@@ -1,0 +1,39 @@
+name: CI
+
+# Запускаем проверку при каждом push и при каждом pull request
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Установить зависимости
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Запустить тесты
+        run: python -m pytest -v
+
+      # Этот шаг выполняется только если все предыдущие (в том числе тесты) прошли
+      - name: Сохранить файлы приложения как artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-files
+          path: |
+            app_final.py
+            requirements.txt
+            README.md
+            .env.example
+          if-no-files-found: error
