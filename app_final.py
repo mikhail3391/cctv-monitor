@@ -3,13 +3,16 @@
 Основа: учебный app_final.py (занятие 04 «FastAPI: реализуем приложение вместе»).
 """
 
+import itertools
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Literal, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 APP_VERSION = "1.0.0"
 STARTED_AT = time.time()
@@ -99,3 +102,114 @@ def version():
         "version": APP_VERSION,
         "author": settings.author,
     }
+
+
+# ---------------------------------------------------------------------------
+# Камеры
+# ---------------------------------------------------------------------------
+
+CameraStatus = Literal["online", "offline"]
+
+
+class CameraIn(BaseModel):
+    """Данные, которые присылает пользователь при добавлении камеры."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=50, examples=["Вход, главная"])
+    location: str = Field(min_length=1, max_length=50, examples=["Холл, 1 этаж"])
+    bitrate_mbps: float = Field(
+        default=4.0,
+        gt=0,
+        le=100,
+        description="Битрейт видеопотока, Мбит/с (около 4 для Full HD).",
+    )
+
+
+class Camera(BaseModel):
+    """Зарегистрированная камера."""
+
+    id: int
+    name: str
+    location: str
+    bitrate_mbps: float
+    status: CameraStatus = "online"
+
+
+class StatusIn(BaseModel):
+    status: CameraStatus
+
+
+# Хранилище в памяти: для учебного проекта база данных не нужна.
+CAMERAS: dict[int, Camera] = {}
+_camera_ids = itertools.count(1)
+
+
+def reset_storage() -> None:
+    """Очищает все данные и сбрасывает нумерацию (нужно тестам)."""
+    global _camera_ids
+    CAMERAS.clear()
+    _camera_ids = itertools.count(1)
+
+
+def find_camera(camera_id: int) -> Camera:
+    """Возвращает камеру или отвечает 404."""
+    camera = CAMERAS.get(camera_id)
+    if camera is None:
+        logger.warning("Камера id=%s не найдена", camera_id)
+        raise HTTPException(status_code=404, detail=f"Камера id={camera_id} не найдена")
+    return camera
+
+
+@app.post("/cameras", response_model=Camera, status_code=201)
+def create_camera(data: CameraIn):
+    """Регистрирует камеру. Новая камера сразу считается online."""
+    camera = Camera(
+        id=next(_camera_ids),
+        name=data.name,
+        location=data.location,
+        bitrate_mbps=data.bitrate_mbps,
+    )
+    CAMERAS[camera.id] = camera
+    logger.info(
+        "Добавлена камера id=%s %r (%s), %.1f Мбит/с",
+        camera.id,
+        camera.name,
+        camera.location,
+        camera.bitrate_mbps,
+    )
+    return camera
+
+
+@app.get("/cameras", response_model=list[Camera])
+def list_cameras(status: Optional[CameraStatus] = None, location: Optional[str] = None):
+    """Список камер. Можно отфильтровать по статусу и по части названия места."""
+    items = list(CAMERAS.values())
+    if status:
+        items = [c for c in items if c.status == status]
+    if location:
+        part = location.strip().lower()
+        items = [c for c in items if part in c.location.lower()]
+    return items
+
+
+@app.get("/cameras/{camera_id}", response_model=Camera)
+def get_camera(camera_id: int):
+    """Одна камера по идентификатору."""
+    return find_camera(camera_id)
+
+
+@app.patch("/cameras/{camera_id}/status", response_model=Camera)
+def set_camera_status(camera_id: int, data: StatusIn):
+    """Меняет статус камеры: online или offline."""
+    camera = find_camera(camera_id)
+    if camera.status == data.status:
+        return camera
+    camera.status = data.status
+    if camera.status == "offline":
+        logger.warning(
+            "Камера id=%s %r (%s) перешла в offline", camera.id, camera.name, camera.location
+        )
+    else:
+        logger.info("Камера id=%s %r снова online", camera.id, camera.name)
+    return camera
